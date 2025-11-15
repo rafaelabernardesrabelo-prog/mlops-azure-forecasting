@@ -3,3 +3,12 @@ terraform.tfstate
 terraform.tfstate.backup
 .terraform/
 .terraform.lock.hcl
+
+# Ignore Terraform state & providers
+infra/terraform/.terraform/
+*.tfstate
+*.tfstate.backup
+crash.log
+override.tf
+override.tf.json
+.terraform.tfstate.lock.info
