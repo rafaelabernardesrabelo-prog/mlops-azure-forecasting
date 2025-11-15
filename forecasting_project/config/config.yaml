@@ -1,0 +1,78 @@
+# =====================================================
+# CONFIGURAÇÃO GERAL DO PIPELINE DE FORECASTING + MLFLOW
+# =====================================================
+
+mlflow:
+  uri: "http://localhost:5000"
+  experiment_name: "forecasting_farmacias_sanpablo"
+
+# ---------------------------
+# 1️⃣ Dados de entrada
+# ---------------------------
+data:
+  data_path: "../data/farmaciasp/output/df_resampled_iso.parquet"
+  target_column: "cantidad_vendida"
+  date_column: "anio_semana_dt"
+  key_columns:
+    - "id_pdv"
+    - "id_sku"
+  frequency: "W"
+  feature_columns: []  # se tiver exógenas, adicione aqui
+
+# ---------------------------
+# 2️⃣ Períodos de treino e teste
+# ---------------------------
+split:
+  train:
+    start: "2021-01-01"
+    end: "2023-12-31"
+
+  # opcional — usado apenas se quiser uma fase intermediária de validação
+  # validation:
+  #   start: "2024-01-01"
+  #   end: "2024-06-30"
+
+  test:
+    start: "2024-01-01"
+    end: "2024-12-31"
+
+# ---------------------------
+# 3️⃣ Configurações de modelos
+# ---------------------------
+models:
+  model_save_dir: "../../trained_models/"
+  prediction_window: 1  # previsão de 1 semana por vez
+
+  model_hyperparams:
+    # ====== Auto ARIMA ======
+    auto_arima:
+      test: "kpss"
+      seasonal_test: "ocsb"
+      suppress_warnings: true
+      stepwise: true
+      seasonal: true
+      max_order: 5
+      trace: false
+
+    # ====== Theta ======
+    theta:
+      decomposition_type: "additive"
+      season_length: 52   # semanal, ~1 ano
+
+    # ====== Croston (clássico e variantes) ======
+    croston_classic: {}
+    croston_optimized:
+      alpha: 0.1
+    croston_sba:
+      alpha: 0.2
+
+    # ====== Naive ======
+    naive: {}
+
+    # ====== Seasonal Naive ======
+    seasonal_naive:
+      season_length: 52
+
+    # ====== Moving Average (opcional) ======
+    moving_average:
+      window: 3

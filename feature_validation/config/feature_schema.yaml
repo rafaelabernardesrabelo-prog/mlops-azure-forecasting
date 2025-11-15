@@ -1,0 +1,14 @@
+features:
+categorical:
+target: cantidad_vendida
+date_column: anio_semana_dt
+key_columns:
+  - id_pdv
+  - id_sku
+frequency: weekly # daily, weekly, monthly, etc.
+dtypes:
+  anio_semana: int
+  anio_semana_dt: datetime
+  cantidad_vendida: int
+  id_pdv: object
+  id_sku: object
