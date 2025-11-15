@@ -1,18 +1,35 @@
-# Terraform
+# -------------------------------
+# Terraform – GLOBAL IGNORES
+# -------------------------------
+# Local state
 terraform.tfstate
 terraform.tfstate.backup
+*.tfstate
+*.tfstate.backup
+
+# Crash logs
+crash.log
+
+# Override files
+override.tf
+override.tf.json
+override.tfvars
+override.auto.tfvars
+
+# Sensitive terraform info
+.terraform.tfstate.lock.info
+
+# Providers & plugins directory
 .terraform/
 .terraform.lock.hcl
 
-# Ignore Terraform state & providers
-infra/terraform/.terraform/
-*.tfstate
-*.tfstate.backup
-crash.log
-override.tf
-override.tf.json
-.terraform.tfstate.lock.info
+
+# -------------------------------
+# Project-specific ignores
+# (ignore Terraform stuff inside infra/terraform)
+# -------------------------------
 
 infra/terraform/.terraform/
 infra/terraform/terraform.tfstate
 infra/terraform/terraform.tfstate.*
+infra/terraform/*.backup
