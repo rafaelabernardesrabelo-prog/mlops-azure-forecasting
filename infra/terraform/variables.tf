@@ -13,5 +13,5 @@ variable "location" {
 variable "workspace_name" {
   type        = string
   description = "Name of the Azure Machine Learning workspace"
-  default     = "forecasting-demo-mlw"
+  default     = "forecasting-demo-mlw2"
 }
