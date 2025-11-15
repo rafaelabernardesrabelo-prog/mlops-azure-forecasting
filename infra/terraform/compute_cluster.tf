@@ -1,15 +1,17 @@
 resource "azurerm_machine_learning_compute_cluster" "cpu_cluster" {
-  name                = "${var.prefix}-cpu"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-  workspace_name      = azurerm_machine_learning_workspace.ml_workspace.name
+  name                          = "cpu-cluster"
+  location                      = azurerm_resource_group.rg.location
+  vm_size                       = "Standard_DS11_v2"
+  machine_learning_workspace_id = azurerm_machine_learning_workspace.ml_workspace.id
+  vm_priority                   = "Dedicated" # ou "LowPriority"
 
-  vm_size             = "Standard_DS11_v2"
-  min_nodes           = 0
-  max_nodes           = 2
-  idle_time_before_scale_down = "PT10M"
+  scale_settings {
+    min_node_count                       = 0
+    max_node_count                       = 2
+    scale_down_nodes_after_idle_duration = "PT10M"
+  }
 
-  tags = {
-    environment = "dev"
+  identity {
+    type = "SystemAssigned"
   }
 }
