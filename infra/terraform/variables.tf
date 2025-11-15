@@ -7,7 +7,7 @@ variable "prefix" {
 variable "location" {
   description = "Azure region"
   type        = string
-  default     = "canadacentral"
+  default     = "eastus"
 }
 
 variable "workspace_name" {
