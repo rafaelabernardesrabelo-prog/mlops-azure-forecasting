@@ -35,14 +35,23 @@ def main():
     # ----------------------------
     # 1.2 Configuração do MLflow
     # ----------------------------
-    mlflow.set_tracking_uri(config["mlflow"]["uri"])
-    mlflow.set_experiment(config["mlflow"]["experiment_name"])
+    from azure.ai.ml import MLClient
+    from azure.identity import DefaultAzureCredential
+    import mlflow
 
-    os.environ["MLFLOW_S3_ENDPOINT_URL"] = "http://localhost:9000"
-    os.environ["AWS_ACCESS_KEY_ID"] = "admin"
-    os.environ["AWS_SECRET_ACCESS_KEY"] = "password"
+    credential = DefaultAzureCredential()
 
-    logger.info(f"📡 Connected to MLflow at {config['mlflow']['uri']}")
+    ml_client = MLClient(
+        credential=credential,
+        subscription_id=os.getenv("AZ_SUBSCRIPTION_ID"),
+        resource_group_name=os.getenv("AZ_RESOURCE_GROUP"),
+        workspace_name=os.getenv("AZ_ML_WORKSPACE"),
+    )
+
+    mlflow.set_tracking_uri(ml_client.workspaces.get(os.getenv("AZ_ML_WORKSPACE")).mlflow_tracking_uri)
+    mlflow.set_experiment("forecasting-experiment")
+
+    logger.info("📡 Connected to Azure ML MLflow tracking server.")
 
     # ----------------------------
     # 1.3 Carregamento dos dados
