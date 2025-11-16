@@ -15,7 +15,7 @@ import mlflow
 
 from utils.data_loader import load_and_prepare_data
 from models import ThetaModel
-from metrics import rmse, smape, wmape
+from models.metrics import rmse, smape, wmape
 
 
 # ===============================================
