@@ -1,0 +1,16 @@
+pandas
+numpy
+loguru
+tqdm
+pyyaml
+mlflow
+azure-ai-ml
+azure-identity
+scikit-learn
+sktime
+matplotlib
+statsmodels
+prophet
+darts
+neuralprophet
+lightgbm
