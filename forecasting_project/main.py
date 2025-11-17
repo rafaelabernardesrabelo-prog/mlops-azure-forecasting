@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Main orchestration script for the forecasting framework (MLflow integrated)
+Main orchestration script for the forecasting framework (Azure ML + MLflow)
 """
 
 ############################################################
-# 0) DEVE SER A PRIMEIRA COISA DO ARQUIVO
+# 0) ESTA FLAG DEVE SER DEFINIDA ANTES DE IMPORTAR MLflow
 ############################################################
 import os
-os.environ["MLFLOW_TRACKING_DISABLE_REGISTRY"] = "true"   # <-- ESSA FLAG PRECISA VIR ANTES DE TUDO
+os.environ["MLFLOW_TRACKING_DISABLE_REGISTRY"] = "true"
 
 ############################################################
 # 1) IMPORTS
@@ -20,7 +20,7 @@ import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 from sktime.split import ExpandingWindowSplitter
-import mlflow   # <-- AGORA PODE
+import mlflow   # <- Agora é seguro importar
 
 from utils.data_loader import load_and_prepare_data
 from models import ThetaModel
@@ -37,7 +37,7 @@ def main():
         config = yaml.safe_load(f)
 
     ############################################################
-    # 2.1 Conectar no Azure ML
+    # 2.1 Conectar ao Azure ML
     ############################################################
     logger.info("🔌 Connecting to Azure ML workspace...")
     from azure.ai.ml import MLClient
@@ -52,18 +52,27 @@ def main():
         workspace_name=os.getenv("AZ_ML_WORKSPACE"),
     )
 
+    logger.info("✔ Connected to Azure ML.")
+
     workspace = ml_client.workspaces.get(os.getenv("AZ_ML_WORKSPACE"))
     tracking_uri = workspace.mlflow_tracking_uri
 
     ############################################################
-    # 2.2 CONFIGURA MLflow Tracking
+    # 2.2 CONFIGURAR MLflow Tracking (SEM MODEL REGISTRY)
     ############################################################
     logger.info(f"📡 Tracking URI: {tracking_uri}")
+
     mlflow.set_tracking_uri(tracking_uri)
-    mlflow.set_experiment("forecasting-experiment")
+
+    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", None)
+    logger.info(f"🧪 Experiment (Azure Managed): {experiment_name}")
+
+    # ⭐ IMPORTANTE ⭐
+    # Nunca chamar mlflow.set_experiment() com azureml://
+    # O experimento é definido automaticamente pelo Azure ML.
 
     ############################################################
-    # 2.3 Carregar os dados
+    # 2.3 Carregar dados
     ############################################################
     logger.info("📥 Loading and preparing data.")
     target_series_list = load_and_prepare_data(config["data"])
@@ -76,36 +85,42 @@ def main():
     logger.info(f"Using Time Series: {ts.series_id}")
 
     ############################################################
-    # 2.4 Preparação do split
+    # 2.4 Preparar splits
     ############################################################
     target_df = ts.data
     date_col = ts.date_column
     target_col = ts.target_column
     covariate_cols = ts.covariates_cols
 
-    train_start = pd.to_datetime(config["split"]["train"]["start"])
-    train_end   = pd.to_datetime(config["split"]["train"]["end"])
-    df_train = target_df[(target_df[date_col] >= train_start) &
-                         (target_df[date_col] <= train_end)]
+    split_cfg = config["split"]
+    train_start = pd.to_datetime(split_cfg["train"]["start"])
+    train_end   = pd.to_datetime(split_cfg["train"]["end"])
+
+    df_train = target_df[
+        (target_df[date_col] >= train_start) &
+        (target_df[date_col] <= train_end)
+    ]
 
     initial_window = df_train.shape[0]
+    prediction_window = config["models"]["prediction_window"]
+
     splitter = ExpandingWindowSplitter(
         initial_window=initial_window,
-        step_length=config["models"]["prediction_window"]
+        step_length=prediction_window
     )
 
     ############################################################
-    # 2.5 Modelos
+    # 2.5 Setup dos modelos
     ############################################################
     models_to_run = {"theta": ThetaModel}
 
     ############################################################
-    # 3) LOOP PRINCIPAL DE TREINO + LOGGING
+    # 3) LOOP PRINCIPAL
     ############################################################
     for _, (idx_train, idx_test) in tqdm(enumerate(splitter.split(target_df))):
 
-        df_train = target_df.iloc[idx_train].set_index(date_col)
-        df_test  = target_df.iloc[idx_test].set_index(date_col)
+        df_train_split = target_df.iloc[idx_train].set_index(date_col)
+        df_test_split  = target_df.iloc[idx_test].set_index(date_col)
 
         for model_name, model_class in models_to_run.items():
 
@@ -118,49 +133,52 @@ def main():
             model_instance = model_class(model_params=model_params)
 
             try:
-                with mlflow.start_run(run_name=model_name):
+                # ⭐ Sem set_experiment() — Azure ML cuida disso
+                with mlflow.start_run(run_name=model_name, nested=True):
 
                     mlflow.log_param("series_id", ts.series_id)
                     mlflow.log_param("model_name", model_name)
                     mlflow.log_params(model_params)
 
                     # ---- Train
-                    logger.info("🧠 Fitting...")
+                    logger.info("🧠 Fitting model...")
                     model_instance.fit(
-                        df_train[target_col],
-                        covariates=df_train[covariate_cols] if covariate_cols else None,
+                        df_train_split[target_col],
+                        covariates=df_train_split[covariate_cols] if covariate_cols else None,
                     )
 
                     # ---- Predict
                     logger.info("🔮 Predicting...")
                     pred_df = model_instance.predict(
-                        df_test.index,
-                        covariates=df_test[covariate_cols] if covariate_cols else None,
+                        df_test_split.index,
+                        covariates=df_test_split[covariate_cols] if covariate_cols else None,
                     )
 
-                    y_true = df_test[target_col].values
-                    y_pred = pred_df[target_col].values
+                    # Ajuste obrigatório
+                    pred_df["y_true"] = df_test_split[target_col].values
 
-                    # ---- Metrics
+                    # ---- Métricas
                     metrics_dict = {
-                        "rmse": rmse(y_true, y_pred),
-                        "smape": smape(y_true, y_pred),
-                        "wmape": wmape(y_true, y_pred),
+                        "rmse": rmse(df_test_split[target_col].values, pred_df["y_pred"].values),
+                        "smape": smape(df_test_split[target_col].values, pred_df["y_pred"].values),
+                        "wmape": wmape(df_test_split[target_col].values, pred_df["y_pred"].values),
                     }
                     mlflow.log_metrics(metrics_dict)
 
-                    # ---- Save artifacts
-                    os.makedirs(config["models"]["model_save_dir"], exist_ok=True)
-                    model_path = f"{config['models']['model_save_dir']}/{model_name}_{ts.series_id}.pkl"
+                    # ---- Save model
+                    save_dir = config["models"]["model_save_dir"]
+                    os.makedirs(save_dir, exist_ok=True)
+
+                    model_path = f"{save_dir}/{model_name}_{ts.series_id}.pkl"
                     model_instance.save_model(model_path)
                     mlflow.log_artifact(model_path)
 
-                    pred_df["y_true"] = y_true
+                    # ---- Save predictions
                     pred_file = f"predictions_{model_name}_{ts.series_id}.csv"
                     pred_df.to_csv(pred_file, index=False)
                     mlflow.log_artifact(pred_file)
 
-                    logger.info("✅ Logged!")
+                    logger.info("✅ Logged successfully!")
 
             except Exception as e:
                 logger.error(f"❌ Error running {model_name}: {e}")
@@ -170,7 +188,7 @@ def main():
 
 
 ############################################################
-# 4) EXECUÇÃO DIRETA
+# 4) ENTRYPOINT
 ############################################################
 if __name__ == "__main__":
     if os.path.basename(os.getcwd()) != "forecasting_project":
