@@ -2,8 +2,17 @@
 """
 Main orchestration script for the forecasting framework (MLflow integrated)
 """
+
+############################################################
+# 0) DEVE SER A PRIMEIRA COISA DO ARQUIVO
+############################################################
 import os
-import sys  # <-- ADICIONE ESTA LINHA
+os.environ["MLFLOW_TRACKING_DISABLE_REGISTRY"] = "true"   # <-- ESSA FLAG PRECISA VIR ANTES DE TUDO
+
+############################################################
+# 1) IMPORTS
+############################################################
+import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import yaml
@@ -11,33 +20,28 @@ import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 from sktime.split import ExpandingWindowSplitter
-import mlflow
+import mlflow   # <-- AGORA PODE
 
 from utils.data_loader import load_and_prepare_data
 from models import ThetaModel
 from models.metrics import rmse, smape, wmape
 
 
-# ===============================================
-# 1️⃣ Função principal
-# ===============================================
+############################################################
+# 2) FUNÇÃO PRINCIPAL
+############################################################
 def main():
-    """
-    Main orchestration script for the forecasting framework.
-    """
-    # ----------------------------
-    # 1.1 Carrega configuração YAML
-    # ----------------------------
+
     logger.info("Loading configuration.")
     with open("config/config.yaml", "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
-    # ----------------------------
-    # 1.2 Configuração do MLflow
-    # ----------------------------
+    ############################################################
+    # 2.1 Conectar no Azure ML
+    ############################################################
+    logger.info("🔌 Connecting to Azure ML workspace...")
     from azure.ai.ml import MLClient
     from azure.identity import DefaultAzureCredential
-    import mlflow
 
     credential = DefaultAzureCredential()
 
@@ -48,117 +52,96 @@ def main():
         workspace_name=os.getenv("AZ_ML_WORKSPACE"),
     )
 
-    mlflow.set_tracking_uri(ml_client.workspaces.get(os.getenv("AZ_ML_WORKSPACE")).mlflow_tracking_uri)
+    workspace = ml_client.workspaces.get(os.getenv("AZ_ML_WORKSPACE"))
+    tracking_uri = workspace.mlflow_tracking_uri
+
+    ############################################################
+    # 2.2 CONFIGURA MLflow Tracking
+    ############################################################
+    logger.info(f"📡 Tracking URI: {tracking_uri}")
+    mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment("forecasting-experiment")
 
-    logger.info("📡 Connected to Azure ML MLflow tracking server.")
-
-    # ----------------------------
-    # 1.3 Carregamento dos dados
-    # ----------------------------
-    logger.info("Loading and preparing data.")
-    data_dir = os.path.dirname(config["data"]["data_path"])
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
-
+    ############################################################
+    # 2.3 Carregar os dados
+    ############################################################
+    logger.info("📥 Loading and preparing data.")
     target_series_list = load_and_prepare_data(config["data"])
 
     if not target_series_list:
-        logger.warning("No time series data found. Exiting.")
+        logger.warning("⚠️ No time series found. Exiting.")
         return
 
-    # ----------------------------
-    # 1.4 Configuração dos modelos
-    # ----------------------------
-    models_to_run = {
-        "theta": ThetaModel
-    }
+    ts = target_series_list[0]
+    logger.info(f"Using Time Series: {ts.series_id}")
 
-    ts = target_series_list[0]  # usando apenas a primeira série
-    logger.info(f"Time Series ID: {ts.series_id}")
-
-    is_seasonal = ts.is_seasonal
-    period = ts.seasonality_period
+    ############################################################
+    # 2.4 Preparação do split
+    ############################################################
     target_df = ts.data
-    covariate_cols = ts.covariates_cols
     date_col = ts.date_column
     target_col = ts.target_column
-    prediction_window = config["models"]["prediction_window"]
+    covariate_cols = ts.covariates_cols
 
-    # ----------------------------
-    # 1.5 Split de treino e teste
-    # ----------------------------
-    train_start_date = pd.to_datetime(config["split"]["train"]["start"])
-    train_end_date = pd.to_datetime(config["split"]["train"]["end"])
-    test_start_date = pd.to_datetime(config["split"]["test"]["start"])
-    test_end_date = pd.to_datetime(config["split"]["test"]["end"])
-
-    df_train = target_df.loc[
-        (target_df[date_col] >= train_start_date)
-        & (target_df[date_col] <= train_end_date)
-    ]
+    train_start = pd.to_datetime(config["split"]["train"]["start"])
+    train_end   = pd.to_datetime(config["split"]["train"]["end"])
+    df_train = target_df[(target_df[date_col] >= train_start) &
+                         (target_df[date_col] <= train_end)]
 
     initial_window = df_train.shape[0]
-    splitter = ExpandingWindowSplitter(initial_window=initial_window, step_length=prediction_window)
-    df_pred = pd.DataFrame()
+    splitter = ExpandingWindowSplitter(
+        initial_window=initial_window,
+        step_length=config["models"]["prediction_window"]
+    )
 
-    # ===============================================
-    # 2️⃣ Loop principal de previsão e logging MLflow
-    # ===============================================
-    for _, (idxs_train, idxs_test) in tqdm(enumerate(splitter.split(target_df))):
-        df_train = target_df.iloc[idxs_train].set_index(date_col)
-        df_test = target_df.iloc[idxs_test].set_index(date_col)
+    ############################################################
+    # 2.5 Modelos
+    ############################################################
+    models_to_run = {"theta": ThetaModel}
 
-        # Loop por modelo
+    ############################################################
+    # 3) LOOP PRINCIPAL DE TREINO + LOGGING
+    ############################################################
+    for _, (idx_train, idx_test) in tqdm(enumerate(splitter.split(target_df))):
+
+        df_train = target_df.iloc[idx_train].set_index(date_col)
+        df_test  = target_df.iloc[idx_test].set_index(date_col)
+
         for model_name, model_class in models_to_run.items():
-            logger.info(f"--- Running {model_name.replace('_', ' ').title()} Model ---")
+
+            logger.info(f"🚀 Running model: {model_name}")
+
+            model_params = config["models"]["model_hyperparams"].get(model_name, {})
+            if ts.is_seasonal:
+                model_params["season_length"] = ts.seasonality_period
+
+            model_instance = model_class(model_params=model_params)
 
             try:
-                model_params = config["models"]["model_hyperparams"].get(model_name, {})
-
-                # Ajustes automáticos de sazonalidade
-                if model_name == "theta" and is_seasonal:
-                    model_params["season_length"] = period
-
-                elif model_name in ["seasonal_naive", "auto_arima"] and is_seasonal:
-                    model_params["season_length"] = period
-                    model_params["seasonal"] = True
-
-
-                model_instance = model_class(model_params=model_params)
-
-                # ----------------------------
-                # 2.1 Inicia execução no MLflow
-                # ----------------------------
                 with mlflow.start_run(run_name=model_name):
+
                     mlflow.log_param("series_id", ts.series_id)
                     mlflow.log_param("model_name", model_name)
                     mlflow.log_params(model_params)
 
-                    # ----------------------------
-                    # 2.2 Treinamento
-                    # ----------------------------
-                    logger.info(f"Fitting {model_name} model.")
+                    # ---- Train
+                    logger.info("🧠 Fitting...")
                     model_instance.fit(
                         df_train[target_col],
                         covariates=df_train[covariate_cols] if covariate_cols else None,
                     )
 
-                    # ----------------------------
-                    # 2.3 Previsão
-                    # ----------------------------
-                    logger.info("Making predictions.")
-                    predictions_df = model_instance.predict(
+                    # ---- Predict
+                    logger.info("🔮 Predicting...")
+                    pred_df = model_instance.predict(
                         df_test.index,
                         covariates=df_test[covariate_cols] if covariate_cols else None,
                     )
 
                     y_true = df_test[target_col].values
-                    y_pred = predictions_df[target_col].values if target_col in predictions_df else predictions_df.values
+                    y_pred = pred_df[target_col].values
 
-                    # ----------------------------
-                    # 2.4 Cálculo de métricas
-                    # ----------------------------
+                    # ---- Metrics
                     metrics_dict = {
                         "rmse": rmse(y_true, y_pred),
                         "smape": smape(y_true, y_pred),
@@ -166,52 +149,33 @@ def main():
                     }
                     mlflow.log_metrics(metrics_dict)
 
-                    # ----------------------------
-                    # 2.5 Salva previsões e modelo
-                    # ----------------------------
-                    model_save_dir = config["models"]["model_save_dir"]
-                    if not os.path.exists(model_save_dir):
-                        os.makedirs(model_save_dir)
-
-                    pred_date_ini = df_test.index[0].date().strftime("%Y%m%d")
-                    pred_date_end = df_test.index[-1].date().strftime("%Y%m%d")
-                    model_path = os.path.join(
-                        model_save_dir,
-                        f"{model_name}_{ts.series_id}_{pred_date_ini}_{pred_date_end}.pkl",
-                    )
-
+                    # ---- Save artifacts
+                    os.makedirs(config["models"]["model_save_dir"], exist_ok=True)
+                    model_path = f"{config['models']['model_save_dir']}/{model_name}_{ts.series_id}.pkl"
                     model_instance.save_model(model_path)
                     mlflow.log_artifact(model_path)
 
-                    # Salva previsões CSV
-                    predictions_df["y_true"] = y_true
-                    predictions_df["series_id"] = ts.series_id
-                    predictions_df["model"] = model_name
-                    predictions_csv = f"predictions_{model_name}_{ts.series_id}.csv"
-                    predictions_df.to_csv(predictions_csv, index=False)
-                    mlflow.log_artifact(predictions_csv)
+                    pred_df["y_true"] = y_true
+                    pred_file = f"predictions_{model_name}_{ts.series_id}.csv"
+                    pred_df.to_csv(pred_file, index=False)
+                    mlflow.log_artifact(pred_file)
 
-                    df_pred = pd.concat([df_pred, predictions_df])
-
-                    logger.info(f"✅ {model_name} logged successfully in MLflow.")
+                    logger.info("✅ Logged!")
 
             except Exception as e:
-                logger.error(f"❌ Error during {model_name} execution: {e}")
+                logger.error(f"❌ Error running {model_name}: {e}")
 
-            logger.info(f"--- Finished {model_name.replace('_', ' ').title()} Model ---")
-
-    logger.info("🎯 All models finished.")
+    logger.info("🎯 Finished all models.")
     print("FIM")
 
 
-# ===============================================
-# 3️⃣ Execução direta
-# ===============================================
+############################################################
+# 4) EXECUÇÃO DIRETA
+############################################################
 if __name__ == "__main__":
-    # Ajusta diretório de execução
     if os.path.basename(os.getcwd()) != "forecasting_project":
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
-        os.chdir(project_root)
+        new_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
+        os.chdir(new_dir)
         logger.info(f"Changed working directory to: {os.getcwd()}")
 
     main()
