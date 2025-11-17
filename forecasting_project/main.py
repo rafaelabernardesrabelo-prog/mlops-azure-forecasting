@@ -1,17 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-Main orchestration script for the forecasting framework (Azure ML + MLflow)
+Main orchestration script for the forecasting framework
+Now using SELF-HOSTED MLflow (VM Azure + Docker + MinIO)
 """
 
 ############################################################
-# 0) ESTA FLAG DEVE SER DEFINIDA ANTES DE IMPORTAR MLflow
+# 0) IMPORTS E CONFIGURAÇÃO MLflow REMOTO
 ############################################################
 import os
-os.environ["MLFLOW_TRACKING_DISABLE_REGISTRY"] = "true"
-
-############################################################
-# 1) IMPORTS
-############################################################
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -20,8 +16,22 @@ import pandas as pd
 from loguru import logger
 from tqdm import tqdm
 from sktime.split import ExpandingWindowSplitter
-import mlflow   # <- Agora é seguro importar
 
+import mlflow
+
+# 🔥 CONFIG MLflow remoto (VM Azure)
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
+mlflow.set_registry_uri(os.getenv("MLFLOW_TRACKING_URI"))
+
+# 🔥 Configurar MinIO (artefatos)
+os.environ["MLFLOW_S3_ENDPOINT_URL"] = os.getenv("MLFLOW_S3_ENDPOINT_URL")
+os.environ["AWS_ACCESS_KEY_ID"] = os.getenv("AWS_ACCESS_KEY_ID")
+os.environ["AWS_SECRET_ACCESS_KEY"] = os.getenv("AWS_SECRET_ACCESS_KEY")
+
+
+############################################################
+# 1) IMPORTS DO PROJETO
+############################################################
 from utils.data_loader import load_and_prepare_data
 from models import ThetaModel
 from models.metrics import rmse, smape, wmape
@@ -37,42 +47,14 @@ def main():
         config = yaml.safe_load(f)
 
     ############################################################
-    # 2.1 Conectar ao Azure ML
+    # 2.1 Configurar Experimento (AGORA VOCÊ PODE USAR SET_EXPERIMENT)
     ############################################################
-    logger.info("🔌 Connecting to Azure ML workspace...")
-    from azure.ai.ml import MLClient
-    from azure.identity import DefaultAzureCredential
-
-    credential = DefaultAzureCredential()
-
-    ml_client = MLClient(
-        credential=credential,
-        subscription_id=os.getenv("AZ_SUBSCRIPTION_ID"),
-        resource_group_name=os.getenv("AZ_RESOURCE_GROUP"),
-        workspace_name=os.getenv("AZ_ML_WORKSPACE"),
-    )
-
-    logger.info("✔ Connected to Azure ML.")
-
-    workspace = ml_client.workspaces.get(os.getenv("AZ_ML_WORKSPACE"))
-    tracking_uri = workspace.mlflow_tracking_uri
+    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "forecasting")
+    mlflow.set_experiment(experiment_name)
+    logger.info(f"🧪 Using experiment: {experiment_name}")
 
     ############################################################
-    # 2.2 CONFIGURAR MLflow Tracking (SEM MODEL REGISTRY)
-    ############################################################
-    logger.info(f"📡 Tracking URI: {tracking_uri}")
-
-    mlflow.set_tracking_uri(tracking_uri)
-
-    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", None)
-    logger.info(f"🧪 Experiment (Azure Managed): {experiment_name}")
-
-    # ⭐ IMPORTANTE ⭐
-    # Nunca chamar mlflow.set_experiment() com azureml://
-    # O experimento é definido automaticamente pelo Azure ML.
-
-    ############################################################
-    # 2.3 Carregar dados
+    # 2.2 Carregar dados
     ############################################################
     logger.info("📥 Loading and preparing data.")
     target_series_list = load_and_prepare_data(config["data"])
@@ -85,7 +67,7 @@ def main():
     logger.info(f"Using Time Series: {ts.series_id}")
 
     ############################################################
-    # 2.4 Preparar splits
+    # 2.3 Preparar splits
     ############################################################
     target_df = ts.data
     date_col = ts.date_column
@@ -110,7 +92,7 @@ def main():
     )
 
     ############################################################
-    # 2.5 Setup dos modelos
+    # 2.4 Setup dos modelos
     ############################################################
     models_to_run = {"theta": ThetaModel}
 
@@ -133,8 +115,8 @@ def main():
             model_instance = model_class(model_params=model_params)
 
             try:
-                # ⭐ Sem set_experiment() — Azure ML cuida disso
-                with mlflow.start_run(run_name=model_name, nested=True):
+                # ⭐ Agora você pode startar runs normalmente
+                with mlflow.start_run(run_name=f"{model_name}_{ts.series_id}", nested=False):
 
                     mlflow.log_param("series_id", ts.series_id)
                     mlflow.log_param("model_name", model_name)
@@ -154,7 +136,6 @@ def main():
                         covariates=df_test_split[covariate_cols] if covariate_cols else None,
                     )
 
-                    # Ajuste obrigatório
                     pred_df["y_true"] = df_test_split[target_col].values
 
                     # ---- Métricas
