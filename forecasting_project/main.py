@@ -34,7 +34,7 @@ def main():
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
     mlflow.set_tracking_uri(tracking_uri)
 
-    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "local-forecasting")
+    experiment_name = os.getenv("MLFLOW_EXPERIMENT_NAME", "local-forecasting-2")
     mlflow.set_experiment(experiment_name)
 
     logger.info(f"📡 MLflow Tracking URI: {tracking_uri}")
